@@ -20,8 +20,9 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <noscript><p style="padding:24px;font-family:sans-serif">Campus Quest needs JavaScript. Please enable it and reload.</p></noscript>
   <div class="ambient" aria-hidden="true"></div>
-  <main class="app">
+  <div class="app">
 
     <header class="topbar">
       <a class="brand" href="#map" aria-label="Campus Quest home">
@@ -68,12 +69,13 @@
       </nav>
     </section>
 
-    <section class="workspace" aria-label="Campus exploration">
+    <main class="workspace" aria-label="Campus exploration">
       <div class="map-panel">
         <div class="map-grid" aria-hidden="true"></div>
         <div class="map-fade"><div id="map" role="application" aria-label="Interactive map of the Notre Dame of Marbel University campus"></div></div>
         <div class="map-status" id="location-status" aria-live="polite"><span class="status-dot"></span>Location off</div>
         <div class="zoom-stack">
+          <button type="button" class="style-toggle" id="map-style" aria-pressed="true" aria-label="Switch map view"><i data-icon="image"></i><span>Street map</span></button>
           <button type="button" class="round-btn" id="zoom-in" aria-label="Zoom in"><i data-icon="plus"></i></button>
           <button type="button" class="round-btn" id="zoom-out" aria-label="Zoom out"><i data-icon="minus"></i></button>
         </div>
@@ -148,7 +150,7 @@
           <button class="text-button" id="progress-link" type="button">View rewards &amp; photos &rarr;</button>
         </section>
       </aside>
-    </section>
+    </main>
 
     <div class="quest-dock" id="quest-dock" hidden>
       <button class="dock-main" id="dock-open" type="button" aria-label="Open quest details">
@@ -164,9 +166,20 @@
       <button class="nav-item" id="nav-quest" type="button" data-nav="quest"><i data-icon="route"></i><small>Quest</small></button>
       <button class="nav-item" id="nav-rewards" type="button" data-nav="rewards"><i data-icon="trophy"></i><small>Rewards</small></button>
     </nav>
-  </main>
+  </div>
 
   <input type="file" id="photo-input" accept="image/*" capture="environment" hidden>
+
+  <!-- =====================================================================
+       index.html map
+       1. <head>        fonts, Leaflet CSS, style.css, early dark-mode check
+       2. .app          top bar -> search + filters -> map + side panel -> mobile dock/nav
+       3. sheets        pop-up dialogs (.sheet): board, quest, photo, complete, detail,
+                        rewards, directory, events, help
+       4. toast/banner  small messages
+       5. scripts       Leaflet, then script.js (must be last)
+       Every id here is used by script.js; every class is styled in style.css.
+       ===================================================================== -->
 
   <!-- Quest board -->
   <div class="sheet" id="board-sheet" hidden><section class="sheet-card scroll-card" role="dialog" aria-modal="true" aria-labelledby="board-title">

@@ -1,15 +1,28 @@
 "use strict";
 /* =====================================================================
-   Campus Quest - NDMU
-   1. DATA      campus, places, history, events, quests
-   2. STATE     progress (localStorage), photos, live session
-   3. ENGINE    arrive -> stay (dwell timer) -> 1 photo -> complete
-   4. MAP       Leaflet, campus-only view, route + pins, geolocation
-   5. UI        render functions, sheets, search, theme
+   Campus Quest - NDMU          (how this file is organised)
+
+    1. CONFIGURATION       campus box, constants, map-tile sources
+    2. DATA                places, history stories, events, quests
+    3. ICONS               tiny inline SVG icons
+    4. STATE & STORAGE     the one `state` object, localStorage, small helpers
+    5. QUEST ENGINE        arrive -> stay (timer) -> 1 photo -> complete
+    6. MAP & GEOLOCATION   Leaflet map, tiles, pins, GPS
+    7. UI HELPERS          toast, banner, status pill
+    8. RENDERING           draw the screen from `state`
+    9. SHEETS, THEME, DEMO open/close pop-ups, dark mode, demo mode
+   10. EVENT HANDLERS      every click/typing listener, attached once
+   11. INITIALISATION      what runs when the page loads
+
+   EXTERNAL SERVICES USED (none needs a secret key):
+   - Leaflet 1.9.4 (map library, loaded in index.html)
+   - Map tiles: OpenStreetMap or Esri (see TILE_SOURCES)
+   - Browser APIs: Geolocation, File input (camera), Canvas, localStorage,
+     Screen Wake Lock (optional)
    This file is ASCII-only on purpose (no encoding problems in VS Code).
    ===================================================================== */
 
-/* ------------------------------ 1. DATA ------------------------------ */
+/* ============================ 1. CONFIGURATION ============================ */
 const CAMPUS = {
   name: "Notre Dame of Marbel University",
   center: [6.49571, 124.84114],
@@ -27,8 +40,28 @@ const KEYS = {
   photos: "campus-quest-v2-photos",
   theme: "campus-quest-theme",
   demo: "campus-quest-demo",
+  mapStyle: "campus-quest-map-style",
 };
 
+/* Keyless tile sources (CARTO now needs an API key).
+   OSM standard tiles need a Referer, so they work when the site is served
+   over http(s) (Netlify, GitHub Pages, Live Server) but not from file://.
+   Esri World Street Map works without a key everywhere, so it is the
+   fallback. If one source keeps failing, the app switches to the other. */
+const TILE_SOURCES = {
+  osm: { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", native: 19,
+    credit: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' },
+  // Real aerial photos (keyless). Shown by default so visitors recognise buildings and paths.
+  satellite: { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", native: 18, max: 19, // Esri has no photos above ~18 here ("map data not yet available"), so stop zooming one step later
+    credit: 'Imagery &copy; Esri, Maxar, Earthstar Geographics' },
+  esri: { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", native: 19,
+    credit: 'Tiles &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors' },
+};
+
+// Circumference of the timer ring in the SVG (2 * pi * radius 27).
+const RING = 169.65;
+
+/* ============================ 2. DATA ============================ */
 // type: building | office | food | landmark
 const PLACES = [
   { id: "gate", name: "Main Gate", type: "landmark", lat: 6.495612, lng: 124.839755, description: "Primary campus entrance and security checkpoint for visitors." },
@@ -142,21 +175,22 @@ const QUESTS = [
       stop("gym", 40, 15, "Photo of the Gymnasium.", "Finish at the Gymnasium."),
     ],
   },
-  fun("first-steps", "First Steps", "Quick", "gate", 20, 20, "Selfie at the Main Gate.", "Badge: First Steps", "Walk to the main entrance and say hello to campus.", "First Steps"),
-  fun("hall-hopper", "Hall Hopper", "Explorer", "doherty", 45, 40, "Photo of the hall's front door or name.", "", "Find the lecture hall at the north end of campus.", "Hall Hopper"),
-  fun("merienda", "Merienda Run", "Snack", "canteen", 60, 30, "Photo of your merienda (or the menu).", "", "Eat like a Marbelian: stay a full minute and enjoy it.", "Food Scout"),
-  fun("reflect", "Two Quiet Minutes", "Chill", "chapel", 120, 50, "Photo of a calm corner near the chapel.", "", "Stay two full minutes. No rushing - this one is about stillness.", "Pilgrim"),
-  fun("court-side", "Court Side", "Sporty", "gym", 60, 35, "Photo of the court.", "", "Reach the indoor court used for PE and intramurals.", "Athlete"),
-  fun("sprinter", "Victory Pose", "Sporty", "athletics", 45, 35, "Photo of your best victory pose on the court.", "", "Strike a winner's pose at the open-air Athletics Court.", "Sprinter"),
-  fun("gate-keeper", "Sucayan Sidestep", "Quick", "sucayan-gate", 30, 25, "Photo of the Sucayan Gate.", "", "Discover a side entrance most freshmen never use.", "Gate Keeper"),
-  fun("pantua", "Pantua Pathfinder", "Explorer", "pantua-gate", 30, 25, "Photo of the Pantua Gate.", "", "Walk all the way to the Pantua side of campus.", "Pathfinder"),
-  fun("alumni-alley", "Alumni Alley", "Explorer", "alumni", 40, 30, "Photo of the Alumni Relations Office sign.", "", "See where graduates come back to.", "Alumni Friend"),
-  fun("first-aid", "Know Your Clinic", "Safety", "clinic", 30, 25, "Photo of the clinic sign, so you know where help is.", "", "Learn where to go if you ever feel unwell on campus.", "Safety Scout"),
-  fun("dumont-detective", "Dumont Detective", "Explorer", "dumont", 40, 30, "Photo of Dumont Hall.", "", "Spot the hall that hides beside Doherty.", "Hall Detective"),
-  fun("refuel", "Gym Refuel", "Snack", "gym-canteen", 60, 30, "Photo of your drink or snack.", "", "Refuel at the canteen beside the gym - stay a minute.", "Refuel Champ"),
-  fun("science-scout", "Science Scout", "Explorer", "teston", 40, 35, "Photo of Teston.", "", "Find one of the halls with science and computer labs.", "Science Scout"),
+  sideQuest("first-steps", "First Steps", "Quick", "gate", 20, 20, "Selfie at the Main Gate.", "Walk to the main entrance and say hello to campus.", "First Steps"),
+  sideQuest("hall-hopper", "Hall Hopper", "Explorer", "doherty", 45, 40, "Photo of the hall's front door or name.", "Find the lecture hall at the north end of campus.", "Hall Hopper"),
+  sideQuest("merienda", "Merienda Run", "Snack", "canteen", 60, 30, "Photo of your merienda (or the menu).", "Eat like a Marbelian: stay a full minute and enjoy it.", "Food Scout"),
+  sideQuest("reflect", "Two Quiet Minutes", "Chill", "chapel", 120, 50, "Photo of a calm corner near the chapel.", "Stay two full minutes. No rushing - this one is about stillness.", "Pilgrim"),
+  sideQuest("court-side", "Court Side", "Sporty", "gym", 60, 35, "Photo of the court.", "Reach the indoor court used for PE and intramurals.", "Athlete"),
+  sideQuest("sprinter", "Victory Pose", "Sporty", "athletics", 45, 35, "Photo of your best victory pose on the court.", "Strike a winner's pose at the open-air Athletics Court.", "Sprinter"),
+  sideQuest("gate-keeper", "Sucayan Sidestep", "Quick", "sucayan-gate", 30, 25, "Photo of the Sucayan Gate.", "Discover a side entrance most freshmen never use.", "Gate Keeper"),
+  sideQuest("pantua", "Pantua Pathfinder", "Explorer", "pantua-gate", 30, 25, "Photo of the Pantua Gate.", "Walk all the way to the Pantua side of campus.", "Pathfinder"),
+  sideQuest("alumni-alley", "Alumni Alley", "Explorer", "alumni", 40, 30, "Photo of the Alumni Relations Office sign.", "See where graduates come back to.", "Alumni Friend"),
+  sideQuest("first-aid", "Know Your Clinic", "Safety", "clinic", 30, 25, "Photo of the clinic sign, so you know where help is.", "Learn where to go if you ever feel unwell on campus.", "Safety Scout"),
+  sideQuest("dumont-detective", "Dumont Detective", "Explorer", "dumont", 40, 30, "Photo of Dumont Hall.", "Spot the hall that hides beside Doherty.", "Hall Detective"),
+  sideQuest("refuel", "Gym Refuel", "Snack", "gym-canteen", 60, 30, "Photo of your drink or snack.", "Refuel at the canteen beside the gym - stay a minute.", "Refuel Champ"),
+  sideQuest("science-scout", "Science Scout", "Explorer", "teston", 40, 35, "Photo of Teston.", "Find one of the halls with science and computer labs.", "Science Scout"),
 ];
-function fun(id, title, tag, place, dwell, xp, photo, _unused, blurb, badge) {
+// A side quest is a quest with exactly one stop.
+function sideQuest(id, title, tag, place, dwell, xp, photo, blurb, badge) {
   return {
     id: "fun-" + id, line: "fun", title, tag, blurb, bonus: 0, badge,
     stops: [stop(place, dwell, xp, photo, blurb)],
@@ -166,7 +200,7 @@ function fun(id, title, tag, place, dwell, xp, photo, _unused, blurb, badge) {
 const TYPE_ICON = { building: "building", office: "briefcase", food: "cup", landmark: "flag", event: "star", quest: "route" };
 const TYPE_LABEL = { building: "Building", office: "Office", food: "Food", landmark: "Gate / court", event: "Event" };
 
-/* ------------------------------ icons ------------------------------ */
+/* ============================ 3. ICONS ============================ */
 const ICONS = {
   pin: '<path d="M12 21s-7-5.6-7-11a7 7 0 0 1 14 0c0 5.4-7 11-7 11Z"/><circle cx="12" cy="10" r="2.5"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4Z"/><circle cx="12" cy="13.5" r="3.5"/>',
@@ -201,11 +235,12 @@ function hydrateIcons(root) {
   });
 }
 
-/* ------------------------------ 2. STATE ------------------------------ */
+/* ============================ 4. STATE & STORAGE ============================ */
+// `state` is the single source of truth. Render functions read it; handlers change it.
 const state = {
   map: null, layer: null, routeLayer: null, tiles: null,
   userMarker: null, accCircle: null, fix: null, watchId: null,
-  sim: false, demo: false, filter: "all", query: "",
+  mapStyle: "satellite", sim: false, demo: false, filter: "all", query: "",
   progress: { xp: 0, done: {}, badges: [], finished: [], active: null },
   photos: {}, session: null, pending: null, lastTick: 0, wake: null,
   focusedBeforeSheet: null, boardQuestId: null, lastStage: "", completeNext: null,
@@ -284,7 +319,7 @@ function fmtTime(sec) {
 }
 function fmtDur(sec) { return sec >= 60 ? (sec % 60 ? Math.floor(sec / 60) + " min " + (sec % 60) + " s" : sec / 60 + " min") : sec + " s"; }
 
-/* ------------------------------ 3. ENGINE ------------------------------ */
+/* ============================ 5. QUEST ENGINE ============================ */
 function syncSession() {
   const a = activeStop();
   const key = a ? a.key : null;
@@ -456,34 +491,42 @@ function completeStop() {
   openSheet("complete-sheet");
 }
 
-/* ------------------------------ 4. MAP ------------------------------ */
-/* Keyless tile sources (CARTO now needs an API key).
-   OSM standard tiles need a Referer, so they work when the site is served
-   over http(s) (Netlify, GitHub Pages, Live Server) but not from file://.
-   Esri World Street Map works without a key everywhere, so it is the
-   fallback. If one source keeps failing, the app switches to the other. */
-const TILE_SOURCES = {
-  osm: { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", native: 19,
-    credit: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' },
-  esri: { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", native: 19,
-    credit: 'Tiles &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors' },
-};
+/* ============================ 6. MAP & GEOLOCATION ============================ */
 function setTiles(source) {
   if (!state.map) return;
-  const key = source || state.tileKey || (location.protocol.indexOf("http") === 0 ? "osm" : "esri");
+  const streetKey = state.tileKey === "osm" || state.tileKey === "esri" ? state.tileKey : (location.protocol.indexOf("http") === 0 ? "osm" : "esri");
+  const key = source || (state.mapStyle === "satellite" ? "satellite" : streetKey);
   state.tileKey = key;
   const src = TILE_SOURCES[key];
   if (state.tiles) state.tiles.remove();
   let errs = 0;
-  state.tiles = L.tileLayer(src.url, { maxNativeZoom: src.native, maxZoom: 20, minZoom: 15, crossOrigin: true });
+  state.tiles = L.tileLayer(src.url, { maxNativeZoom: src.native, maxZoom: src.max || 20, minZoom: 15, crossOrigin: true });
   state.tiles.on("tileerror", () => {
     errs += 1;
-    if (errs === 6 && !state.tileSwitched) { state.tileSwitched = true; showToast("Switching map source..."); setTiles(key === "osm" ? "esri" : "osm"); }
+    if (errs === 6 && key !== "satellite" && !state.tileSwitched) { state.tileSwitched = true; showToast("Switching map source..."); setTiles(key === "osm" ? "esri" : "osm"); }
   });
   state.tiles.addTo(state.map);
+  state.map.setMaxZoom(src.max || 20); // the map itself may not zoom past what the tiles can show
   state.tiles.bringToBack();
   const c = $("map-credit");
   if (c) c.innerHTML = src.credit;
+}
+function loadMapStyle() {
+  try { return localStorage.getItem(KEYS.mapStyle) === "streets" ? "streets" : "satellite"; } catch (e) { return "satellite"; }
+}
+// Switch between aerial photos and the street map; the button label shows what a tap will switch TO.
+function setMapStyle(style, persistIt) {
+  state.mapStyle = style;
+  document.body.classList.toggle("sat", style === "satellite");
+  const btn = $("map-style");
+  if (btn) {
+    btn.lastElementChild.textContent = style === "satellite" ? "Street map" : "Satellite";
+    btn.setAttribute("aria-pressed", String(style === "satellite"));
+  }
+  state.tileSwitched = false;
+  setTiles();
+  drawMap();
+  if (persistIt) { try { localStorage.setItem(KEYS.mapStyle, style); } catch (e) { /* ignore */ } }
 }
 function fitLimits() {
   const m = state.map;
@@ -508,7 +551,7 @@ function initMap() {
   state.layer = L.layerGroup().addTo(map);
   state.routeLayer = L.layerGroup().addTo(map);
   map.setView(CAMPUS.center, 18, { animate: false });
-  setTiles();
+  setMapStyle(loadMapStyle(), false);
   requestAnimationFrame(() => {
     map.invalidateSize();
     map.fitBounds(CAMPUS.view, { padding: [40, 40], animate: false });
@@ -568,7 +611,9 @@ function drawMap() {
   if (!showRoute) return;
   const pts = q.stops.map((s) => { const p = placeById(s.place); return [p.lat, p.lng]; });
   if (pts.length > 1) {
-    L.polyline(pts, { color: "#2D7A41", weight: 3, opacity: 0.55, dashArray: "2 9", lineCap: "round" }).addTo(state.routeLayer);
+    L.polyline(pts, state.mapStyle === "satellite"
+      ? { color: "#74E785", weight: 4, opacity: 0.95, dashArray: "2 9", lineCap: "round" }
+      : { color: "#2D7A41", weight: 3, opacity: 0.55, dashArray: "2 9", lineCap: "round" }).addTo(state.routeLayer);
   }
   const cur = curIdx(q);
   q.stops.forEach((s, i) => {
@@ -585,20 +630,6 @@ function drawMap() {
   });
 }
 
-function setLocationStatus(text, on) {
-  const el = $("location-status");
-  el.replaceChildren();
-  const dot = h("span", "status-dot" + (on ? " is-on" : ""));
-  el.append(dot, document.createTextNode(text));
-}
-function showBanner(msg) { const b = $("error-banner"); b.textContent = msg; b.hidden = false; }
-function hideBanner() { $("error-banner").hidden = true; }
-function showToast(msg) {
-  const t = $("toast");
-  t.textContent = msg; t.hidden = false;
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => { t.hidden = true; }, 3200);
-}
 function onFix(lat, lng, acc) {
   if (state.sim) return; // demo mode controls the position
   setFix(lat, lng, acc);
@@ -659,7 +690,23 @@ function simulateArrival() {
   focusPlace(a.place, 19);
 }
 
-/* ------------------------------ 5. UI ------------------------------ */
+/* ============================ 7. UI HELPERS ============================ */
+function setLocationStatus(text, on) {
+  const el = $("location-status");
+  el.replaceChildren();
+  const dot = h("span", "status-dot" + (on ? " is-on" : ""));
+  el.append(dot, document.createTextNode(text));
+}
+function showBanner(msg) { const b = $("error-banner"); b.textContent = msg; b.hidden = false; }
+function hideBanner() { $("error-banner").hidden = true; }
+function showToast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => { t.hidden = true; }, 3200);
+}
+
+/* ============================ 8. RENDERING ============================ */
 function renderHud() {
   const xp = state.progress.xp, lvl = levelOf(xp), cur = xp % LEVEL_XP, pct = (cur / LEVEL_XP) * 100;
   $("points-label").textContent = String(xp);
@@ -670,7 +717,6 @@ function renderHud() {
   $("xp-fill").style.width = pct + "%";
 }
 
-const RING = 169.65;
 function setBtn(btn, label, action, disabled) {
   const span = btn.querySelector("span");
   (span || btn).textContent = label;
@@ -806,7 +852,7 @@ function renderLineCards() {
     const n = doneCount(q);
     const b = h("button", "line-card" + (id === "tour" ? " is-feature" : ""));
     b.type = "button";
-    b.append(h("span", "pill-tag " + (id === "tour" ? "on-dark" : ""), LINES[id].label));
+    b.append(h("span", "pill-tag", LINES[id].label));
     b.append(h("strong", "", q.title));
     b.append(h("small", "", n + " / " + q.stops.length + " stops \u00b7 +" + questXp(q) + " XP"));
     const bar = h("span", "mini-bar"); const fill = h("i"); fill.style.width = (n / q.stops.length) * 100 + "%"; bar.append(fill);
@@ -828,9 +874,10 @@ function renderLineCards() {
 function renderBoard() {
   const host = $("board-list");
   host.replaceChildren();
-  [["tour", "Guided tours"], ["visitor", null], ["fun", "Side quests"]].forEach(([line]) => {
+  const headings = { tour: "Guided tour for freshmen", visitor: "For visitors", fun: "Fun side quests" };
+  Object.keys(headings).forEach((line) => {
     const group = QUESTS.filter((q) => q.line === line);
-    const title = { tour: "Guided tour for freshmen", visitor: "For visitors", fun: "Fun side quests" }[line];
+    const title = headings[line];
     host.append(h("h3", "board-h", title));
     const grid = h("div", "board-grid");
     group.forEach((q) => {
@@ -968,7 +1015,9 @@ function renderSearch() {
   const box = $("search-results"), query = state.query;
   $("clear-search").hidden = !query;
   if (!query) { box.hidden = true; box.replaceChildren(); drawMap(); return; }
-  const places = [...PLACES, ...EVENTS].filter((i) => itemMatches(i) || (state.filter === "all" && i.type === "event" && [i.name, i.venue, i.description].join(" ").toLowerCase().includes(query)));
+  // Events only show on the map under the "Events" chip, but they should still be searchable from "All places".
+  const searchable = (i) => [i.name, i.venue, i.description].join(" ").toLowerCase().includes(query);
+  const places = [...PLACES, ...EVENTS].filter((i) => itemMatches(i) || (state.filter === "all" && i.type === "event" && searchable(i)));
   const quests = state.filter === "all" || state.filter === "quest"
     ? QUESTS.filter((q) => (q.title + " " + q.blurb + " " + q.tag).toLowerCase().includes(query)) : [];
   box.replaceChildren();
@@ -1000,7 +1049,7 @@ function renderAll() {
   drawMap();
 }
 
-/* sheets */
+/* ============================ 9. SHEETS, THEME, DEMO ============================ */
 function openSheet(id) {
   const sheet = $(id);
   if (!sheet) return;
@@ -1027,7 +1076,6 @@ function setNav(name) {
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("is-active", b.dataset.nav === name));
 }
 
-/* theme + demo */
 function setTheme(theme, persistIt) {
   document.documentElement.dataset.theme = theme;
   const dark = theme === "dark", b = $("theme-toggle");
@@ -1056,11 +1104,41 @@ function doAction(action) {
   else if (action === "complete") completeStop();
 }
 
+/* ============================ 10. EVENT HANDLERS ============================ */
+// bindUi() runs ONCE at start-up. Each helper below attaches one group of listeners.
 function bindUi() {
+  bindTopBarAndMapButtons();
+  bindQuestControls();
+  bindSearchAndFilters();
+  bindSheets();
+  bindMobileNav();
+  // If the phone slept, don't count the sleeping time as time spent at the spot.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.session && !state.session.dwellDone) state.lastTick = Date.now();
+  });
+}
+
+function bindTopBarAndMapButtons() {
   $("theme-toggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true));
   $("help-button").addEventListener("click", () => openSheet("help-sheet"));
   $("demo-toggle").addEventListener("change", (e) => setDemo(e.target.checked, true));
-  ["primary-action", "dock-action"].forEach((id) => $(id).addEventListener("click", (e) => { const a = e.currentTarget.dataset.action; if (a) doAction(a); }));
+  $("open-rewards").addEventListener("click", openRewards);
+  $("progress-link").addEventListener("click", openRewards);
+  $("see-all-places").addEventListener("click", () => openSheet("directory-sheet"));
+  $("show-events").addEventListener("click", () => openSheet("events-sheet"));
+  $("recenter").addEventListener("click", startGeolocation);
+  $("map-style").addEventListener("click", () => setMapStyle(state.mapStyle === "satellite" ? "streets" : "satellite", true));
+  $("zoom-in").addEventListener("click", () => state.map && state.map.zoomIn(1));
+  $("zoom-out").addEventListener("click", () => state.map && state.map.zoomOut(1));
+  $("reset-progress").addEventListener("click", resetProgress);
+}
+
+function bindQuestControls() {
+  // The big button changes its job (locate / photo / complete...), so it just reads data-action.
+  ["primary-action", "dock-action"].forEach((id) => $(id).addEventListener("click", (e) => {
+    const action = e.currentTarget.dataset.action;
+    if (action) doAction(action);
+  }));
   $("open-board").addEventListener("click", openBoard);
   $("see-board").addEventListener("click", openBoard);
   $("sim-button").addEventListener("click", simulateArrival);
@@ -1070,48 +1148,60 @@ function bindUi() {
   $("photo-use").addEventListener("click", usePhoto);
   $("qd-start").addEventListener("click", () => startQuest(state.boardQuestId));
   $("complete-next").addEventListener("click", () => state.completeNext && state.completeNext());
-  $("open-rewards").addEventListener("click", openRewards);
-  $("progress-link").addEventListener("click", openRewards);
-  $("see-all-places").addEventListener("click", () => openSheet("directory-sheet"));
-  $("show-events").addEventListener("click", () => openSheet("events-sheet"));
-  $("recenter").addEventListener("click", startGeolocation);
-  $("zoom-in").addEventListener("click", () => state.map && state.map.zoomIn(1));
-  $("zoom-out").addEventListener("click", () => state.map && state.map.zoomOut(1));
-  $("reset-progress").addEventListener("click", () => {
-    if (!window.confirm("Reset all quests, XP and photos on this device?")) return;
-    state.progress = { xp: 0, done: {}, badges: [], finished: [], active: null };
-    state.photos = {};
-    try { localStorage.removeItem(KEYS.progress); localStorage.removeItem(KEYS.photos); } catch (e) { /* ignore */ }
-    state.session = null;
-    renderAll();
-    renderRewards();
-  });
+}
+
+function bindSearchAndFilters() {
   document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
     state.filter = chip.dataset.filter;
-    document.querySelectorAll(".chip").forEach((x) => { x.classList.toggle("is-active", x === chip); x.setAttribute("aria-pressed", String(x === chip)); });
+    document.querySelectorAll(".chip").forEach((x) => {
+      x.classList.toggle("is-active", x === chip);
+      x.setAttribute("aria-pressed", String(x === chip));
+    });
     renderSearch();
   }));
-  $("search-form").addEventListener("submit", (e) => { e.preventDefault(); state.query = $("search-input").value.trim().toLowerCase(); renderSearch(); });
-  $("search-input").addEventListener("input", () => { state.query = $("search-input").value.trim().toLowerCase(); renderSearch(); });
-  $("clear-search").addEventListener("click", () => { $("search-input").value = ""; state.query = ""; renderSearch(); $("search-input").focus(); });
+  const readQuery = () => { state.query = $("search-input").value.trim().toLowerCase(); renderSearch(); };
+  $("search-form").addEventListener("submit", (e) => { e.preventDefault(); readQuery(); });
+  $("search-input").addEventListener("input", readQuery);
+  $("clear-search").addEventListener("click", () => { $("search-input").value = ""; readQuery(); $("search-input").focus(); });
+  // Click anywhere outside the search box closes the result list.
+  document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) $("search-results").hidden = true; });
+}
+
+function bindSheets() {
   document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => closeSheet(b.closest(".sheet").id)));
+  // Clicking the dark backdrop (not the card) closes a sheet.
   document.querySelectorAll(".sheet").forEach((sh) => sh.addEventListener("click", (e) => { if (e.target === sh) closeSheet(sh.id); }));
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     const open = document.querySelector(".sheet:not([hidden])");
     if (open) closeSheet(open.id); else $("search-results").hidden = true;
   });
-  document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) $("search-results").hidden = true; });
-  // mobile: quest panel overlay + bottom nav
-  $("dock-open").addEventListener("click", () => { document.body.classList.add("panel-open"); setNav("quest"); });
-  $("panel-close").addEventListener("click", () => { document.body.classList.remove("panel-open"); setNav("map"); });
-  $("nav-directory").addEventListener("click", () => { setNav("directory"); openSheet("directory-sheet"); });
-  $("nav-quest").addEventListener("click", () => { document.body.classList.add("panel-open"); setNav("quest"); });
-  $("nav-rewards").addEventListener("click", () => { setNav("rewards"); openRewards(); });
-  document.querySelector('[data-nav="map"]').addEventListener("click", () => { document.body.classList.remove("panel-open"); setNav("map"); });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && state.session && !state.session.dwellDone) state.lastTick = Date.now(); });
 }
 
+function bindMobileNav() {
+  const showPanel = () => { document.body.classList.add("panel-open"); setNav("quest"); };
+  const showMap = () => { document.body.classList.remove("panel-open"); setNav("map"); };
+  $("dock-open").addEventListener("click", showPanel);
+  $("nav-quest").addEventListener("click", showPanel);
+  $("panel-close").addEventListener("click", showMap);
+  document.querySelector('[data-nav="map"]').addEventListener("click", showMap);
+  $("nav-directory").addEventListener("click", () => { setNav("directory"); openSheet("directory-sheet"); });
+  $("nav-rewards").addEventListener("click", () => { setNav("rewards"); openRewards(); });
+}
+
+function resetProgress() {
+  if (!window.confirm("Reset all quests, XP and photos on this device?")) return;
+  state.progress = { xp: 0, done: {}, badges: [], finished: [], active: null };
+  state.photos = {};
+  try { localStorage.removeItem(KEYS.progress); localStorage.removeItem(KEYS.photos); } catch (e) { /* storage blocked: nothing to remove */ }
+  state.session = null;
+  renderAll();
+  renderRewards();
+}
+
+/* ============================ 11. INITIALISATION ============================ */
+
+// Start-up order matters: load saved data -> attach listeners -> draw lists -> start the map -> draw everything.
 document.addEventListener("DOMContentLoaded", () => {
   hydrateIcons();
   state.progress = loadProgress();
